@@ -318,6 +318,61 @@ def _pill(text: str, kind: str) -> str:
     cls = mapping.get(kind_l, "pill-dormant")
     return f"<span class='pill {cls}'>{text}</span>"
 
+# --- Badge + column-config helpers for st.dataframe rendering ----------------
+# st.dataframe (unlike st.write(df.to_html(...))) doesn't render HTML pills,
+# so we use leading emoji indicators to preserve the RAG colour cue while
+# letting the dataframe be scrollable, column-sized and pin-compatible.
+
+def _rag_badge(rag: str) -> str:
+    emoji = {"Red": "\U0001F534", "Amber": "\U0001F7E0", "Green": "\U0001F7E2",
+             "Dormant": "\u26AB", "Stable": "\U0001F535"}
+    return f"{emoji.get(rag, '')} {rag}".strip()
+
+def _priority_badge(priority: str) -> str:
+    emoji = {"High": "\U0001F534", "Medium": "\U0001F7E0", "Low": "\u26AA"}
+    return f"{emoji.get(priority, '')} {priority}".strip()
+
+def _column_config(
+    columns: List[str],
+    wide: Optional[List[str]] = None,
+    narrow: Optional[List[str]] = None,
+    pin: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a column_config dict for st.dataframe.
+
+    - `wide`   → columns rendered at width="large"
+    - `narrow` → columns rendered at width="small"
+    - every other column gets width="medium"
+    - `pin`    → column name to pin to the left (stays visible on horizontal scroll)
+
+    Falls back to a plain {name: width} dict if the installed Streamlit is too
+    old to expose st.column_config.Column — never raises.
+    """
+    wide_s = set(wide or [])
+    narrow_s = set(narrow or [])
+    cfg: Dict[str, Any] = {}
+    col_factory = getattr(st, "column_config", None)
+    for col in columns:
+        if col in wide_s:
+            width = "large"
+        elif col in narrow_s:
+            width = "small"
+        else:
+            width = "medium"
+        if col_factory and hasattr(col_factory, "Column"):
+            kwargs: Dict[str, Any] = {"width": width}
+            if pin and col == pin:
+                kwargs["pinned"] = True  # requires Streamlit >= 1.43
+            try:
+                cfg[col] = col_factory.Column(col, **kwargs)
+            except TypeError:
+                # Older Streamlit — drop unsupported kwargs and retry
+                kwargs.pop("pinned", None)
+                cfg[col] = col_factory.Column(col, **kwargs)
+        else:
+            cfg[col] = width
+    return cfg
+
 def _rag_from_days(days: Optional[int], amber: int, red: int) -> str:
     if days is None:
         return "Dormant"
@@ -633,17 +688,31 @@ def section_relationship(filters: Dict[str, Any]) -> None:
             })
         df = pd.DataFrame(rows).sort_values(["_sort", "Customer"]).drop(columns=["_sort"])
 
-        # Render RAG column as coloured pill
-        def _pill_html(rag: str) -> str: return _pill(rag, rag)
+        # Use emoji badges for the RAG column so st.dataframe() can render it
+        # (unlike st.write(df.to_html(...)), st.dataframe doesn't evaluate HTML).
         df_display = df.copy()
-        df_display["RAG"] = df_display["RAG"].apply(_pill_html)
+        df_display["RAG"] = df_display["RAG"].apply(_rag_badge)
 
         # Compact view drops some columns
         if st.session_state["view_mode"] == "Compact":
             keep = ["Customer", "AM", "Status", "Last contact", "Days since", "RAG"]
             df_display = df_display[keep]
 
-        st.write(df_display.to_html(escape=False, index=False), unsafe_allow_html=True)
+        st.dataframe(
+            df_display,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                df_display.columns.tolist(),
+                wide=["Customer", "Last summary", "Open items",
+                      "Complaints (open / 90d resolved)"],
+                narrow=["AM", "Status", "Days since", "Sent", "Received",
+                        "Avg complaint (h)", "Avg orders (h)", "Avg queries (h)",
+                        "Avg quotations (h)", "Avg doc review (h)",
+                        "SLA breaches", "Customer reply (h)", "RAG"],
+                pin="Customer",
+            ),
+        )
         st.markdown(
             "<div class='awaiting'>Per-customer email thread summaries populate when the "
             "Microsoft Graph connector reads the 12 connected mailboxes. Clicking a row "
@@ -705,7 +774,17 @@ def section_commercial(filters: Dict[str, Any]) -> None:
                 "Pipeline value": "TBC",
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                df.columns.tolist(),
+                wide=["Customer", "Revenue / mo", "Pipeline value"],
+                narrow=["AM", "Status", "Trend", "Active SKUs (90d)", "New SKUs (90d)"],
+                pin="Customer",
+            ),
+        )
         _export_csv_button(df, "commercial_growth.csv", "comm_growth")
 
         st.markdown("##### Inbound leads (new supplier / brand / clinic / pharmacy)")
@@ -717,7 +796,17 @@ def section_commercial(filters: Dict[str, Any]) -> None:
                 "Contacted by": "—", "What they want": "—",
                 "AM assigned": "—", "Stage": "—", "Last update": "—",
             }])
-        st.dataframe(leads, use_container_width=True, hide_index=True)
+        st.dataframe(
+            leads,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                leads.columns.tolist(),
+                wide=["Company", "What they want"],
+                narrow=["Type", "First contact", "AM assigned", "Stage", "Last update"],
+                pin="Company",
+            ),
+        )
         _export_csv_button(leads, "inbound_leads.csv", "inbound_leads")
         _timestamp_caption("Commercial growth")
 
@@ -744,7 +833,17 @@ def _am_panel(am_name: str, filters: Dict[str, Any]) -> None:
     cat_df = pd.DataFrame([{
         "Category": x, "Avg hours": "TBC",
     } for x in ["Complaints", "Orders / Licences", "Queries", "Quotations", "Doc review"]])
-    st.dataframe(cat_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        cat_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=_column_config(
+            cat_df.columns.tolist(),
+            wide=["Category"],
+            narrow=["Avg hours"],
+            pin="Category",
+        ),
+    )
 
     m1, m2, m3 = st.columns(3)
     m1.metric("SLA breaches (this month)", "TBC")
@@ -772,13 +871,34 @@ def _am_panel(am_name: str, filters: Dict[str, Any]) -> None:
     prosp = [{"Customer": c["name"], "Stage": "TBC", "Days since contact": "TBC"}
              for c in portfolio if c["status"] == "Prospect"]
     if prosp:
-        st.dataframe(pd.DataFrame(prosp), use_container_width=True, hide_index=True)
+        prosp_df = pd.DataFrame(prosp)
+        st.dataframe(
+            prosp_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                prosp_df.columns.tolist(),
+                wide=["Customer"],
+                narrow=["Stage", "Days since contact"],
+                pin="Customer",
+            ),
+        )
     else:
         st.caption("No prospects in portfolio.")
 
     st.markdown("**NPI bottleneck (overdue tasks by department)**")
     bottleneck = pd.DataFrame([{"Department": d, "Overdue tasks": "TBC"} for d in NPI_DEPARTMENTS])
-    st.dataframe(bottleneck, use_container_width=True, hide_index=True)
+    st.dataframe(
+        bottleneck,
+        use_container_width=True,
+        hide_index=True,
+        column_config=_column_config(
+            bottleneck.columns.tolist(),
+            wide=["Department"],
+            narrow=["Overdue tasks"],
+            pin="Department",
+        ),
+    )
 
     m4, m5 = st.columns(2)
     m4.metric("Complaint rate (complaints / orders)", "TBC")
@@ -813,11 +933,32 @@ def section_pipeline(filters: Dict[str, Any]) -> None:
         stalled_only = fc2.checkbox("Stalled only", key="pipe_stall")
         red_only     = fc3.checkbox("Red only",     key="pipe_red")
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                df.columns.tolist(),
+                wide=["Customer", "Supplier", "Product/SKU", "Notes"],
+                narrow=["Days in stage", "CNL received", "Licence applied",
+                        "Licence expiry", "Export licence", "Shipped", "Arrived"],
+                pin="Customer",
+            ),
+        )
 
         st.markdown("##### Bottleneck analysis")
         bn = pd.DataFrame([{"Stage": s, "Active imports": "TBC", "Avg days": "TBC"} for s in PIPELINE_STAGES])
-        st.dataframe(bn, use_container_width=True, hide_index=True)
+        st.dataframe(
+            bn,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                bn.columns.tolist(),
+                wide=["Stage"],
+                narrow=["Active imports", "Avg days"],
+                pin="Stage",
+            ),
+        )
 
         _export_csv_button(df, "pipeline.csv", "pipe_export")
         _timestamp_caption("Import pipeline")
@@ -837,7 +978,17 @@ def section_stock_capacity(filters: Dict[str, Any]) -> None:
                 "FG Units": "TBC", "Days in stock": "TBC",
                 "Idle flag": "TBC", "Packaging available": "TBC",
             }])
-        st.dataframe(stock, use_container_width=True, hide_index=True)
+        st.dataframe(
+            stock,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                stock.columns.tolist(),
+                wide=["Brand", "SKU", "Packaging available"],
+                narrow=["Bulk SOH (kg)", "FG Units", "Days in stock", "Idle flag"],
+                pin="Brand",
+            ),
+        )
         st.caption("Total kg held: TBC  ·  Total idle kg: TBC  ·  Idle value: TBC")
         _export_csv_button(stock, "stock.csv", "stock_export")
 
@@ -850,7 +1001,18 @@ def section_stock_capacity(filters: Dict[str, Any]) -> None:
                 "SOH Today (kg)": "TBC", "Pipeline (kg)": "TBC",
                 "Utilisation %": "TBC",
             }])
-        st.dataframe(cap, use_container_width=True, hide_index=True)
+        st.dataframe(
+            cap,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                cap.columns.tolist(),
+                wide=["Brand"],
+                narrow=["Full Capacity (kg)", "SOH Today (kg)",
+                        "Pipeline (kg)", "Utilisation %"],
+                pin="Brand",
+            ),
+        )
 
         c1, c2, c3 = st.columns(3)
         c1.metric("Unit 13 Dollman St — bulk", "TBC kg")
@@ -886,11 +1048,32 @@ def section_npi(filters: Dict[str, Any]) -> None:
                 "Owner": "—", "Department": "—", "Start date": "TBC",
                 "Due date": "TBC", "Days overdue": "TBC", "Status": "—",
             }])
-        st.dataframe(npi, use_container_width=True, hide_index=True)
+        st.dataframe(
+            npi,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                npi.columns.tolist(),
+                wide=["Customer", "Product", "Task"],
+                narrow=["Owner", "Department", "Start date", "Due date",
+                        "Days overdue", "Status"],
+                pin="Customer",
+            ),
+        )
 
         st.markdown("##### Bottleneck indicator")
         bn = pd.DataFrame([{"Department": d, "Overdue tasks": "TBC"} for d in NPI_DEPARTMENTS])
-        st.dataframe(bn, use_container_width=True, hide_index=True)
+        st.dataframe(
+            bn,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                bn.columns.tolist(),
+                wide=["Department"],
+                narrow=["Overdue tasks"],
+                pin="Department",
+            ),
+        )
         st.caption(
             "NPI = internal product development from first task → QP release sign-off on the new formulation. "
             "Excludes import / CNL. Cycle time = days from first task to completion."
@@ -914,13 +1097,62 @@ def section_compliance(filters: Dict[str, Any]) -> None:
             ("MHRA correspondence", "mhra"),
             ("Yellow Card reports", "yellow_card"),
         ]
+        # Column-width + pin hints per compliance table (first column is the pin)
+        compliance_hints = {
+            "licence_expiry": {
+                "wide": ["Customer", "Licence #"],
+                "narrow": ["Expiry", "Days left", "RAG"],
+                "pin": "Customer",
+            },
+            "audits": {
+                "wide": ["Supplier"],
+                "narrow": ["Last audit", "Next due", "Status", "RAG"],
+                "pin": "Supplier",
+            },
+            "home_office": {
+                "wide": ["Supplier"],
+                "narrow": ["Registered", "Expiry", "Status"],
+                "pin": "Supplier",
+            },
+            "gmp_gacp": {
+                "wide": ["Supplier"],
+                "narrow": ["Cert type", "Issued", "Expiry", "Status"],
+                "pin": "Supplier",
+            },
+            "oos": {
+                "wide": ["Customer", "Product"],
+                "narrow": ["Batch", "Raised", "Status"],
+                "pin": "Customer",
+            },
+            "mhra": {
+                "wide": ["Subject", "Action required"],
+                "narrow": ["Date", "Direction"],
+                "pin": "Subject",
+            },
+            "yellow_card": {
+                "wide": ["Event"],
+                "narrow": ["Date", "Product", "Status"],
+                "pin": "Date",
+            },
+        }
         for lbl, key in labels:
             st.markdown(f"##### {lbl}")
             df = bundle[key]
             if df.empty:
                 _awaiting(f"{lbl}: awaiting QA / regulatory mailbox connection.")
                 df = pd.DataFrame([{c: "TBC" for c in df.columns} if list(df.columns) else {"Info": "TBC"}])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            hint = compliance_hints.get(key, {})
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=_column_config(
+                    df.columns.tolist(),
+                    wide=hint.get("wide"),
+                    narrow=hint.get("narrow"),
+                    pin=hint.get("pin") if hint.get("pin") in df.columns else None,
+                ),
+            )
             _export_csv_button(df, f"{key}.csv", f"comp_{key}")
         _timestamp_caption("Compliance & regulatory")
 
@@ -968,14 +1200,21 @@ def section_alerts(filters: Dict[str, Any]) -> None:
         log["_p"] = log["Priority"].map(priority_order).fillna(9)
         log = log.sort_values(["_p", "Date identified"]).drop(columns=["_p"])
 
-        def _row_color(priority: str) -> str:
-            return {"High": COLOR_RED, "Medium": COLOR_AMBER}.get(priority, COLOR_DORMANT)
-        # Render coloured-priority pill column
+        # Render Priority as an emoji badge so st.dataframe can display it.
         disp = log.copy()
-        disp["Priority"] = disp["Priority"].apply(
-            lambda p: _pill(p, "red" if p == "High" else "amber" if p == "Medium" else "dormant")
+        disp["Priority"] = disp["Priority"].apply(_priority_badge)
+        st.dataframe(
+            disp,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                disp.columns.tolist(),
+                wide=["Issue", "Action required", "Customer"],
+                narrow=["Priority", "Category", "Date identified",
+                        "Days open", "Owner", "Status"],
+                pin="Customer",
+            ),
         )
-        st.write(disp.to_html(escape=False, index=False), unsafe_allow_html=True)
 
         st.markdown("##### New inbound emails to ibrar@ (last 24h)")
         _awaiting("Populates when Graph connector is live.")
@@ -983,7 +1222,17 @@ def section_alerts(filters: Dict[str, Any]) -> None:
             "Sender": "—", "Category": "—", "Subject": "—",
             "What they want": "—", "Suggested response": "—",
         }])
-        st.dataframe(sample, use_container_width=True, hide_index=True)
+        st.dataframe(
+            sample,
+            use_container_width=True,
+            hide_index=True,
+            column_config=_column_config(
+                sample.columns.tolist(),
+                wide=["Subject", "What they want", "Suggested response"],
+                narrow=["Category"],
+                pin="Sender",
+            ),
+        )
 
         st.markdown("##### Automatic alert rules")
         st.markdown(
