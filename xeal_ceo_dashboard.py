@@ -1158,10 +1158,18 @@ def section_npi(filters: Dict[str, Any]) -> None:
     with st.expander("8. NPI tracker", expanded=True):
         npi = _fetch_npi_rows()
         if not npi.empty and "Status" in npi.columns:
-            tot     = len(npi)
-            done    = len(npi[npi["Status"].str.lower().str.contains("complete|done|finished", na=False)])
-            overdue = len(npi[npi["Days overdue"].astype(str).str.replace(",","").str.strip().str.match(r"^[1-9]\d*$")])
-            opn     = tot - done
+            try:
+                tot  = len(npi)
+                done = len(npi[npi["Status"].str.lower().str.contains("complete|done|finished", na=False)])
+                # Find the days overdue column regardless of capitalisation
+                day_col = next((c for c in npi.columns if "overdue" in c.lower() and "day" in c.lower()), None)
+                if day_col:
+                    overdue = len(npi[npi[day_col].astype(str).str.replace(",","").str.strip().str.match(r"^[1-9]\d*$")])
+                else:
+                    overdue = "TBC"
+                opn = tot - done
+            except Exception:
+                tot = done = opn = overdue = "TBC"
         else:
             tot = done = opn = overdue = "TBC"
         c1, c2, c3, c4 = st.columns(4)
