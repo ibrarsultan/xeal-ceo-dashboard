@@ -523,15 +523,25 @@ def _read_sheet_tab(tab_name: str, expected_cols: Optional[List[str]] = None) ->
         sh = client.open_by_url(url)
         ws = sh.worksheet(tab_name)
         # get_all_records() uses row 1 as header — standard for our 8 tabs
-        records = ws.get_all_records()
-    except Exception:
+        all_vals = ws.get_all_values()
+        if not all_vals or len(all_vals) < 2:
+            return pd.DataFrame(columns=expected_cols or [])
+        hdr_row = 0
+        for i, row in enumerate(all_vals):
+            if len([c for c in row if str(c).strip()]) >= 3:
+                hdr_row = i
+                break
+        headers = [str(c).strip() for c in all_vals[hdr_row]]
+        data = [r for r in all_vals[hdr_row+1:] if any(str(c).strip() for c in r)]
+        if not data:
+            return pd.DataFrame(columns=expected_cols or [])
+        n = len(headers)
+        padded = [r[:n] + ['']*(max(0,n-len(r))) for r in data]
+        df = pd.DataFrame(padded, columns=headers)
+        df = df[[c for c in df.columns if c]]
+        return df
+    except Exception as e:
         return pd.DataFrame(columns=expected_cols or [])
-    if not records:
-        return pd.DataFrame(columns=expected_cols or [])
-    df = pd.DataFrame(records)
-    # Strip whitespace from column headers in case the sheet has stray spaces
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
 
 
 # --- Stubs that will be replaced once connectors are wired -------------------
