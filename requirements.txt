@@ -1,0 +1,8 @@
+streamlit>=1.33
+pandas>=2.1
+# Connectors to be added when data sources are wired:
+# msal            # Microsoft Graph auth for mailbox reads
+# requests        # Graph REST calls
+# gspread         # Google Sheets
+# google-auth     # Service-account auth for gspread
+# python-docx     # Quarterly review Word generation
