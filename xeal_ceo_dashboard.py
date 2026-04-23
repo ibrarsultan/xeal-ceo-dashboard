@@ -522,16 +522,35 @@ def _read_sheet_tab(tab_name: str, expected_cols: Optional[List[str]] = None) ->
     try:
         sh = client.open_by_url(url)
         ws = sh.worksheet(tab_name)
-        # get_all_records() uses row 1 as header — standard for our 8 tabs
-        records = ws.get_all_records()
-    except Exception:
+        # Use get_all_values() which is more robust than get_all_records()
+        # It handles merged cells and non-standard headers gracefully
+        all_values = ws.get_all_values()
+        if not all_values or len(all_values) < 2:
+            return pd.DataFrame(columns=expected_cols or [])
+        # Find the first row that looks like headers (non-empty cells)
+        header_row = 0
+        for i, row in enumerate(all_values):
+            non_empty = [c for c in row if str(c).strip()]
+            if len(non_empty) >= 3:
+                header_row = i
+                break
+        headers = [str(c).strip() for c in all_values[header_row]]
+        data_rows = all_values[header_row + 1:]
+        # Remove completely empty rows
+        data_rows = [r for r in data_rows if any(str(c).strip() for c in r)]
+        if not data_rows:
+            return pd.DataFrame(columns=expected_cols or [])
+        # Pad or trim rows to match header length
+        n = len(headers)
+        padded = [r[:n] + [''] * max(0, n - len(r)) for r in data_rows]
+        df = pd.DataFrame(padded, columns=headers)
+        # Drop columns with empty headers
+        df = df[[c for c in df.columns if c]]
+        return df
+    except Exception as e:
+        import streamlit as st
+        st.sidebar.error(f"Sheet error ({tab_name}): {e}")
         return pd.DataFrame(columns=expected_cols or [])
-    if not records:
-        return pd.DataFrame(columns=expected_cols or [])
-    df = pd.DataFrame(records)
-    # Strip whitespace from column headers in case the sheet has stray spaces
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
 
 
 # --- Stubs that will be replaced once connectors are wired -------------------
@@ -559,7 +578,7 @@ def _fetch_pipeline_rows() -> pd.DataFrame:
     cols = ["Customer", "Supplier", "Product/SKU", "Current stage",
             "Days in stage", "CNL received", "Licence applied",
             "Licence expiry", "Export licence", "Shipped", "Arrived", "Notes"]
-    return _read_sheet_tab("4. Pipeline Tracker", cols)
+    return _read_sheet_tab("Pipeline Tracker", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -567,7 +586,7 @@ def _fetch_stock_rows() -> pd.DataFrame:
     """Read the 'Stock Intelligence' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "SKU", "Bulk SOH (kg)", "FG Units", "Days in stock",
             "Idle flag", "Packaging available"]
-    return _read_sheet_tab("5. Stock Intelligence", cols)
+    return _read_sheet_tab("Stock Intelligence", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -575,7 +594,7 @@ def _fetch_capacity_rows() -> pd.DataFrame:
     """Read the 'Capacity Dashboard' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "Full Capacity (kg)", "SOH Today (kg)",
             "Pipeline (kg)", "Utilisation %"]
-    return _read_sheet_tab("8. Capacity Dashboard", cols)
+    return _read_sheet_tab("Capacity Dashboard", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -583,7 +602,7 @@ def _fetch_npi_rows() -> pd.DataFrame:
     """Read the 'NPI Tracker' tab. Empty DataFrame on any failure."""
     cols = ["Customer", "Product", "Task", "Owner", "Department",
             "Start date", "Due date", "Days overdue", "Status"]
-    return _read_sheet_tab("6. NPI Tracker", cols)
+    return _read_sheet_tab("NPI Tracker", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -591,7 +610,7 @@ def _fetch_action_log() -> pd.DataFrame:
     """Read the 'Action Log' tab. Empty DataFrame on any failure."""
     cols = ["Priority", "Category", "Customer", "Issue",
             "Date identified", "Days open", "Owner", "Action required", "Status"]
-    return _read_sheet_tab("7. Action Log", cols)
+    return _read_sheet_tab("Action Log", cols)
 
 def _fetch_inbound_leads(window_days: int) -> pd.DataFrame:
     cols = ["Company", "Type", "First contact", "Contacted by",
