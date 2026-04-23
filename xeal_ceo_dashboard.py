@@ -1157,7 +1157,13 @@ def section_stock_capacity(filters: Dict[str, Any]) -> None:
 def section_npi(filters: Dict[str, Any]) -> None:
     with st.expander("8. NPI tracker", expanded=True):
         npi = _fetch_npi_rows()
-        tot, done, opn, overdue = ("TBC",) * 4
+        if not npi.empty and "Status" in npi.columns:
+            tot     = len(npi)
+            done    = len(npi[npi["Status"].str.lower().str.contains("complete|done|finished", na=False)])
+            overdue = len(npi[npi["Days overdue"].astype(str).str.replace(",","").str.strip().str.match(r"^[1-9]\d*$")])
+            opn     = tot - done
+        else:
+            tot = done = opn = overdue = "TBC"
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total tasks", tot)
         c2.metric("Completed", done)
