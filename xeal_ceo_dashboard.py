@@ -477,31 +477,57 @@ def _secret(key: str, default: Any = None) -> Any:
 
 @st.cache_resource(show_spinner=False)
 def _gsheet_client():
-    """Build & cache a gspread client from the service account in st.secrets.
-
-    Returns None (never raises) if:
-      - gspread / google-auth are not installed
-      - GOOGLE_SA_JSON secret is missing or malformed
-      - the credentials fail to authorise
-    """
     sa_info = _secret("GOOGLE_SA_JSON")
     if not sa_info:
         return None
     try:
-        # st.secrets returns an AttrDict — convert to plain dict for google-auth
         sa_info = dict(sa_info)
-    except Exception:
-        return None
-    try:
         import gspread
         from google.oauth2.service_account import Credentials
-    except ImportError:
-        return None
-    try:
         creds = Credentials.from_service_account_info(sa_info, scopes=_GSHEETS_SCOPES)
         return gspread.authorize(creds)
     except Exception:
         return None
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _fetch_all_sheets() -> Dict[str, pd.DataFrame]:
+    """Fetch ALL tabs in a single connection — minimises API quota usage.
+    Cached for 10 minutes. Returns dict of tab_name -> DataFrame."""
+    client = _gsheet_client()
+    if client is None:
+        return {}
+    url = _secret("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
+    try:
+        sh = client.open_by_url(url)
+        result = {}
+        for ws in sh.worksheets():
+            try:
+                all_values = ws.get_all_values()
+                if not all_values or len(all_values) < 2:
+                    result[ws.title] = pd.DataFrame()
+                    continue
+                # Find first row with 3+ non-empty cells = header row
+                header_row = 0
+                for i, row in enumerate(all_values):
+                    if len([c for c in row if str(c).strip()]) >= 3:
+                        header_row = i
+                        break
+                headers = [str(c).strip() for c in all_values[header_row]]
+                data_rows = [r for r in all_values[header_row+1:] 
+                            if any(str(c).strip() for c in r)]
+                if not data_rows:
+                    result[ws.title] = pd.DataFrame(columns=[h for h in headers if h])
+                    continue
+                n = len(headers)
+                padded = [r[:n] + ['']*(max(0, n-len(r))) for r in data_rows]
+                df = pd.DataFrame(padded, columns=headers)
+                df = df[[c for c in df.columns if c]]
+                result[ws.title] = df
+            except Exception:
+                result[ws.title] = pd.DataFrame()
+        return result
+    except Exception:
+        return {}
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -559,7 +585,7 @@ def _fetch_pipeline_rows() -> pd.DataFrame:
     cols = ["Customer", "Supplier", "Product/SKU", "Current stage",
             "Days in stage", "CNL received", "Licence applied",
             "Licence expiry", "Export licence", "Shipped", "Arrived", "Notes"]
-    return _read_sheet_tab("4. Pipeline Tracker", cols)
+    return _read_sheet_tab("Pipeline Tracker", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -567,7 +593,7 @@ def _fetch_stock_rows() -> pd.DataFrame:
     """Read the 'Stock Intelligence' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "SKU", "Bulk SOH (kg)", "FG Units", "Days in stock",
             "Idle flag", "Packaging available"]
-    return _read_sheet_tab("5. Stock Intelligence", cols)
+    return _read_sheet_tab("Stock Intelligence", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -575,7 +601,7 @@ def _fetch_capacity_rows() -> pd.DataFrame:
     """Read the 'Capacity Dashboard' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "Full Capacity (kg)", "SOH Today (kg)",
             "Pipeline (kg)", "Utilisation %"]
-    return _read_sheet_tab("8. Capacity Dashboard", cols)
+    return _read_sheet_tab("Capacity Dashboard", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -583,7 +609,7 @@ def _fetch_npi_rows() -> pd.DataFrame:
     """Read the 'NPI Tracker' tab. Empty DataFrame on any failure."""
     cols = ["Customer", "Product", "Task", "Owner", "Department",
             "Start date", "Due date", "Days overdue", "Status"]
-    return _read_sheet_tab("6. NPI Tracker", cols)
+    return _read_sheet_tab("NPI Tracker", cols)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -591,7 +617,7 @@ def _fetch_action_log() -> pd.DataFrame:
     """Read the 'Action Log' tab. Empty DataFrame on any failure."""
     cols = ["Priority", "Category", "Customer", "Issue",
             "Date identified", "Days open", "Owner", "Action required", "Status"]
-    return _read_sheet_tab("7. Action Log", cols)
+    return _read_sheet_tab("Action Log", cols)
 
 def _fetch_inbound_leads(window_days: int) -> pd.DataFrame:
     cols = ["Company", "Type", "First contact", "Contacted by",
