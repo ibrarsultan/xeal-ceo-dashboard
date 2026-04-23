@@ -1118,7 +1118,22 @@ def section_stock_capacity(filters: Dict[str, Any]) -> None:
                 pin="Brand",
             ),
         )
-        st.caption("Total kg held: TBC  ·  Total idle kg: TBC  ·  Idle value: TBC")
+        if not stock.empty:
+            try:
+                # Find the bulk SOH column regardless of capitalisation
+                soh_col = next((c for c in stock.columns if "bulk" in c.lower() and ("soh" in c.lower() or "kg" in c.lower())), None)
+                idle_col = next((c for c in stock.columns if "idle" in c.lower() and "flag" in c.lower()), None)
+                if soh_col:
+                    soh_vals = pd.to_numeric(stock[soh_col].astype(str).str.replace(",","").str.strip(), errors="coerce")
+                    total_kg = soh_vals.sum()
+                    idle_kg = soh_vals[stock[idle_col].astype(str).str.lower().str.contains("yes|y|idle|flag", na=False)].sum() if idle_col else 0
+                    st.caption(f"Total bulk held: {total_kg:,.0f} g  ·  Total idle: {idle_kg:,.0f} g  ·  Idle value: TBC")
+                else:
+                    st.caption("Total kg held: TBC  ·  Total idle kg: TBC  ·  Idle value: TBC")
+            except Exception:
+                st.caption("Total kg held: TBC  ·  Total idle kg: TBC  ·  Idle value: TBC")
+        else:
+            st.caption("Total kg held: TBC  ·  Total idle kg: TBC  ·  Idle value: TBC")
         _export_csv_button(stock, "stock.csv", "stock_export")
 
         st.markdown("#### B. Capacity")
