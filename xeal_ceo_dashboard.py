@@ -431,12 +431,110 @@ def _timeframe_days(label: str, today: date) -> int:
     return 30
 
 # ---------------------------------------------------------------------------
-# PLACEHOLDER / DEMO DATA GENERATORS
+# DATA CONNECTORS
 # ---------------------------------------------------------------------------
 #
-# Everything below returns placeholder data that is structurally identical to
-# what the live connectors will provide. When a connector is wired in, replace
-# the body of the matching `_fetch_*` function — no caller needs to change.
+# Email / Graph connectors are still stubs and return TBC placeholders.
+# Google Sheets is live: five tabs are read via a service account held in
+# st.secrets. Every connector is fail-soft — any missing credential, missing
+# library, network error or unexpected tab shape returns an empty DataFrame
+# so the dashboard still renders its "awaiting data connection" fallback
+# instead of raising a traceback.
+#
+# --- Google Sheets ----------------------------------------------------------
+#
+# Secrets expected in .streamlit/secrets.toml (or the Streamlit Cloud UI):
+#
+#     GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/…/edit"
+#
+#     [GOOGLE_SA_JSON]
+#     type                        = "service_account"
+#     project_id                  = "…"
+#     private_key_id              = "…"
+#     private_key                 = "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n"
+#     client_email                = "…@…iam.gserviceaccount.com"
+#     client_id                   = "…"
+#     auth_uri                    = "https://accounts.google.com/o/oauth2/auth"
+#     token_uri                   = "https://oauth2.googleapis.com/token"
+#     auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+#     client_x509_cert_url        = "…"
+#
+# Share the sheet with the service account's client_email (Viewer is enough).
+
+_GSHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+    "https://www.googleapis.com/auth/drive.readonly",
+]
+
+
+def _secret(key: str, default: Any = None) -> Any:
+    """Safe st.secrets accessor — returns `default` if secrets not configured."""
+    try:
+        return st.secrets[key]
+    except Exception:
+        return default
+
+
+@st.cache_resource(show_spinner=False)
+def _gsheet_client():
+    """Build & cache a gspread client from the service account in st.secrets.
+
+    Returns None (never raises) if:
+      - gspread / google-auth are not installed
+      - GOOGLE_SA_JSON secret is missing or malformed
+      - the credentials fail to authorise
+    """
+    sa_info = _secret("GOOGLE_SA_JSON")
+    if not sa_info:
+        return None
+    try:
+        # st.secrets returns an AttrDict — convert to plain dict for google-auth
+        sa_info = dict(sa_info)
+    except Exception:
+        return None
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+    except ImportError:
+        return None
+    try:
+        creds = Credentials.from_service_account_info(sa_info, scopes=_GSHEETS_SCOPES)
+        return gspread.authorize(creds)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _read_sheet_tab(tab_name: str, expected_cols: Optional[List[str]] = None) -> pd.DataFrame:
+    """Read a named worksheet tab as a DataFrame. Cached for 5 minutes.
+
+    On any failure (missing secret, auth error, tab missing, empty sheet,
+    network blip) an empty DataFrame is returned — with `expected_cols` as
+    its schema if provided — so each section's own 'awaiting data' branch
+    continues to render the TBC placeholders.
+    """
+    client = _gsheet_client()
+    if client is None:
+        return pd.DataFrame(columns=expected_cols or [])
+    url = _secret("GOOGLE_SHEET_URL", GOOGLE_SHEET_URL)
+    if not url:
+        return pd.DataFrame(columns=expected_cols or [])
+    try:
+        sh = client.open_by_url(url)
+        ws = sh.worksheet(tab_name)
+        # get_all_records() uses row 1 as header — standard for our 8 tabs
+        records = ws.get_all_records()
+    except Exception:
+        return pd.DataFrame(columns=expected_cols or [])
+    if not records:
+        return pd.DataFrame(columns=expected_cols or [])
+    df = pd.DataFrame(records)
+    # Strip whitespace from column headers in case the sheet has stray spaces
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+# --- Stubs that will be replaced once connectors are wired -------------------
 
 def _fetch_email_stats(customer: Dict[str, Any], window_days: int) -> Dict[str, Any]:
     """Replace with Microsoft Graph query against MAILBOXES (connected=True)."""
@@ -452,32 +550,48 @@ def _fetch_email_stats(customer: Dict[str, Any], window_days: int) -> Dict[str, 
         "customer_reply_hrs": None,
     }
 
+
+# --- Google-Sheet-backed readers (auto-refresh every 5 min via cache TTL) ----
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_pipeline_rows() -> pd.DataFrame:
-    """Replace with Google Sheet 'Pipeline Tracker' tab read."""
+    """Read the 'Pipeline Tracker' tab. Empty DataFrame on any failure."""
     cols = ["Customer", "Supplier", "Product/SKU", "Current stage",
             "Days in stage", "CNL received", "Licence applied",
             "Licence expiry", "Export licence", "Shipped", "Arrived", "Notes"]
-    return pd.DataFrame(columns=cols)
+    return _read_sheet_tab("Pipeline Tracker", cols)
 
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_stock_rows() -> pd.DataFrame:
+    """Read the 'Stock Intelligence' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "SKU", "Bulk SOH (kg)", "FG Units", "Days in stock",
             "Idle flag", "Packaging available"]
-    return pd.DataFrame(columns=cols)
+    return _read_sheet_tab("Stock Intelligence", cols)
 
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_capacity_rows() -> pd.DataFrame:
+    """Read the 'Capacity Dashboard' tab. Empty DataFrame on any failure."""
     cols = ["Brand", "Full Capacity (kg)", "SOH Today (kg)",
             "Pipeline (kg)", "Utilisation %"]
-    return pd.DataFrame(columns=cols)
+    return _read_sheet_tab("Capacity Dashboard", cols)
 
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_npi_rows() -> pd.DataFrame:
+    """Read the 'NPI Tracker' tab. Empty DataFrame on any failure."""
     cols = ["Customer", "Product", "Task", "Owner", "Department",
             "Start date", "Due date", "Days overdue", "Status"]
-    return pd.DataFrame(columns=cols)
+    return _read_sheet_tab("NPI Tracker", cols)
 
+
+@st.cache_data(ttl=300, show_spinner=False)
 def _fetch_action_log() -> pd.DataFrame:
+    """Read the 'Action Log' tab. Empty DataFrame on any failure."""
     cols = ["Priority", "Category", "Customer", "Issue",
             "Date identified", "Days open", "Owner", "Action required", "Status"]
-    return pd.DataFrame(columns=cols)
+    return _read_sheet_tab("Action Log", cols)
 
 def _fetch_inbound_leads(window_days: int) -> pd.DataFrame:
     cols = ["Company", "Type", "First contact", "Contacted by",
@@ -510,6 +624,11 @@ def build_sidebar() -> Dict[str, Any]:
         cols = st.columns([1, 1])
         if cols[0].button("\U0001F504 Refresh all", use_container_width=True):
             ss["last_refresh"] = datetime.now()
+            # Force-clear cached Google Sheet reads so the next render re-fetches
+            try:
+                st.cache_data.clear()
+            except Exception:
+                pass
             st.rerun()
         ss["view_mode"] = cols[1].selectbox(
             "View", ["Detailed", "Compact", "Red alerts only", "My attention today"],
