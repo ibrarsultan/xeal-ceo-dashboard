@@ -1159,7 +1159,24 @@ def section_stock_capacity(filters: Dict[str, Any]) -> None:
         )
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Unit 13 Dollman St — bulk", "TBC kg")
+        try:
+            if not cap.empty:
+                total_col = next((c for c in cap.columns if "soh" in c.lower() or "today" in c.lower()), None)
+                brand_col = next((c for c in cap.columns if "brand" in c.lower()), None)
+                if total_col and brand_col:
+                    total_row = cap[cap[brand_col].astype(str).str.upper().str.contains("TOTAL", na=False)]
+                    if not total_row.empty:
+                        bulk_total = pd.to_numeric(str(total_row[total_col].values[0]).replace(",",""), errors="coerce")
+                        c1.metric("Unit 13 Dollman St — bulk", f"{bulk_total:,.2f} kg" if pd.notna(bulk_total) else "TBC kg")
+                    else:
+                        soh_vals = pd.to_numeric(cap[total_col].astype(str).str.replace(",",""), errors="coerce")
+                        c1.metric("Unit 13 Dollman St — bulk", f"{soh_vals.sum():,.2f} kg")
+                else:
+                    c1.metric("Unit 13 Dollman St — bulk", "TBC kg")
+            else:
+                c1.metric("Unit 13 Dollman St — bulk", "TBC kg")
+        except Exception:
+            c1.metric("Unit 13 Dollman St — bulk", "TBC kg")
         c2.metric("Cato Street — finished goods", "TBC units")
         c3.metric("Trend vs last week", "TBC")
         _export_csv_button(cap, "capacity.csv", "cap_export")
