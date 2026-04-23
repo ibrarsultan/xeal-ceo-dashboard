@@ -49,8 +49,8 @@ import streamlit as st
 # CONFIGURATION — edit these blocks to add mailboxes, customers, or team members
 # ---------------------------------------------------------------------------
 
-APP_TITLE = "Xeal Pharma — CEO Operational Dashboard"
-APP_TAGLINE = "Private CEO view · UK · Germany · Australia"
+APP_TITLE = "Xeal Pharma CBPM Overview - UK"
+APP_TAGLINE = ""
 
 # Brand palette
 COLOR_HEADER = "#1B3A6B"  # dark navy
