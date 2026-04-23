@@ -1327,7 +1327,10 @@ def section_alerts(filters: Dict[str, Any]) -> None:
         # Sort so High → top
         priority_order = {"High": 0, "Medium": 1, "Low": 2}
         log["_p"] = log["Priority"].map(priority_order).fillna(9)
-        log = log.sort_values(["_p", "Date identified"]).drop(columns=["_p"])
+        sort_cols = ["_p"]
+        if "Date identified" in log.columns:
+            sort_cols.append("Date identified")
+        log = log.sort_values(sort_cols).drop(columns=["_p"])
 
         # Render Priority as an emoji badge so st.dataframe can display it.
         disp = log.copy()
